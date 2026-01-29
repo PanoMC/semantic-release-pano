@@ -23,8 +23,6 @@ async function verifyConditions(pluginConfig, context) {
 
     if (!file) {
         errors.push('file configuration is required.');
-    } else if (!(await fs.pathExists(file))) {
-        errors.push(`File ${file} not found.`);
     }
 
     if (!panoVersion) {
@@ -42,10 +40,17 @@ async function publish(pluginConfig, context) {
     const panoToken = env.PANO_TOKEN;
     const url = panoUrl || DEFAULT_PANO_URL;
 
-    const filePath = path.resolve(file);
     const version = nextRelease.version;
     const tagName = nextRelease.gitTag || `v${version}`;
     const notes = nextRelease.notes || '';
+
+    // Resolve file path with version substitution
+    const resolvedFile = file.replace(/\${version}/g, version);
+    const filePath = path.resolve(resolvedFile);
+
+    if (!(await fs.pathExists(filePath))) {
+        throw new SemanticReleaseError(`File ${filePath} not found.`, 'ENOFILE');
+    }
 
     logger.log(`Publishing version ${version} (tag: ${tagName}) to Pano Resource System...`);
     logger.log(`URL: ${url}`);
