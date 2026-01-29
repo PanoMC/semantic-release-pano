@@ -1,5 +1,5 @@
 {
-    "name": "semantic-release-pano",
+    "name": "@PanoMC/semantic-release-pano",
     "version": "1.0.0",
     "description": "Semantic Release plugin to publish resources to Pano Resource System",
     "main": "index.js",
