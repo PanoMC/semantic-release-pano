@@ -6,27 +6,43 @@ const SemanticReleaseError = require('@semantic-release/error');
 
 const DEFAULT_PANO_URL = 'https://api.panomc.com';
 
+function getConfigs(pluginConfig) {
+    if (Array.isArray(pluginConfig.configs)) {
+        return pluginConfig.configs.map(config => {
+            const { configs, ...baseConfig } = pluginConfig;
+            return {
+                ...baseConfig,
+                ...config
+            };
+        });
+    }
+    return [pluginConfig];
+}
+
 async function verifyConditions(pluginConfig, context) {
     const { env } = context;
-    const { resourceId, file, panoVersion } = pluginConfig;
-    const panoToken = env.PANO_TOKEN;
-
+    const configs = getConfigs(pluginConfig);
     const errors = [];
 
-    if (!panoToken) {
-        errors.push('PANO_TOKEN environment variable is required.');
-    }
+    for (const config of configs) {
+        const { resourceId, file, panoVersion, tokenVar } = config;
+        const panoToken = tokenVar ? env[tokenVar] : env.PANO_TOKEN;
 
-    if (!resourceId) {
-        errors.push('resourceId configuration is required.');
-    }
+        if (!panoToken) {
+            errors.push(`PANO_TOKEN environment variable is required${tokenVar ? ` (checked ${tokenVar})` : ''}.`);
+        }
 
-    if (!file) {
-        errors.push('file configuration is required.');
-    }
+        if (!resourceId) {
+            errors.push('resourceId configuration is required.');
+        }
 
-    if (!panoVersion) {
-        errors.push('panoVersion configuration is required (e.g. "1.0.0").');
+        if (!file) {
+            errors.push('file configuration is required.');
+        }
+
+        if (!panoVersion) {
+            errors.push('panoVersion configuration is required (e.g. "1.0.0").');
+        }
     }
 
     if (errors.length > 0) {
@@ -36,66 +52,73 @@ async function verifyConditions(pluginConfig, context) {
 
 async function publish(pluginConfig, context) {
     const { env, nextRelease, logger } = context;
-    const { resourceId, file, panoUrl, panoVersion } = pluginConfig;
-    const panoToken = env.PANO_TOKEN;
-    const url = panoUrl || DEFAULT_PANO_URL;
+    const configs = getConfigs(pluginConfig);
+    const results = [];
 
-    const version = nextRelease.version;
-    const tagName = nextRelease.gitTag || `v${version}`;
-    const notes = nextRelease.notes || '';
+    for (const config of configs) {
+        const { resourceId, file, panoUrl, panoVersion, tokenVar } = config;
+        const panoToken = tokenVar ? env[tokenVar] : env.PANO_TOKEN;
+        const url = panoUrl || DEFAULT_PANO_URL;
 
-    // Resolve file path with version substitution
-    const resolvedFile = file.replace(/\${version}/g, version);
-    const filePath = path.resolve(resolvedFile);
+        const version = nextRelease.version;
+        const tagName = nextRelease.gitTag || `v${version}`;
+        const notes = nextRelease.notes || '';
 
-    if (!(await fs.pathExists(filePath))) {
-        throw new SemanticReleaseError(`File ${filePath} not found.`, 'ENOFILE');
-    }
+        // Resolve file path with version substitution
+        const resolvedFile = file.replace(/\${version}/g, version);
+        const filePath = path.resolve(resolvedFile);
 
-    logger.log(`Publishing version ${version} (tag: ${tagName}) to Pano Resource System...`);
-    logger.log(`URL: ${url}`);
-    logger.log(`Resource ID: ${resourceId}`);
-    logger.log(`File: ${filePath}`);
+        if (!(await fs.pathExists(filePath))) {
+            throw new SemanticReleaseError(`File ${filePath} not found.`, 'ENOFILE');
+        }
 
-    const formData = new FormData();
-    formData.append('title', `v${version}`);
-    formData.append('changelog', notes);
-    formData.append('tag', tagName);
-    formData.append('panoVersion', panoVersion);
-    formData.append('file', fs.createReadStream(filePath));
+        logger.log(`Publishing version ${version} (tag: ${tagName}) to Pano Resource System...`);
+        logger.log(`URL: ${url}`);
+        logger.log(`Resource ID: ${resourceId}`);
+        logger.log(`File: ${filePath}`);
 
-    try {
-        const response = await axios.post(`${url}/v1/resources/${resourceId}/versions`, formData, {
-            headers: {
-                ...formData.getHeaders(),
-                'Authorization': `Bearer ${panoToken}`
-            },
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity
-        });
+        const formData = new FormData();
+        formData.append('title', `v${version}`);
+        formData.append('changelog', notes);
+        formData.append('tag', tagName);
+        formData.append('panoVersion', panoVersion);
+        formData.append('file', fs.createReadStream(filePath));
 
-        logger.log(`Successfully published version ${version} to Pano!`);
-        logger.log(`Response: ${JSON.stringify(response.data)}`);
+        try {
+            const response = await axios.post(`${url}/v1/resources/${resourceId}/versions`, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    'Authorization': `Bearer ${panoToken}`
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            });
 
-        return {
-            name: `Pano Resource Release ${version}`,
-            url: `${url}/resources/${resourceId}` // Assuming this is the public URL, though api url might differ from frontend.
-        };
-    } catch (error) {
-        logger.error('Failed to publish to Pano.');
-        if (error.response) {
-            logger.error(`Status: ${error.response.status}`);
-            logger.error(`Data: ${JSON.stringify(error.response.data)}`);
-            throw new SemanticReleaseError(
-                `Pano API Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`,
-                'EPANOAPI',
-                JSON.stringify(error.response.data)
-            );
-        } else {
-            logger.error(error.message);
-            throw new SemanticReleaseError(error.message, 'ENETWORK');
+            logger.log(`Successfully published version ${version} to Pano!`);
+            logger.log(`Response: ${JSON.stringify(response.data)}`);
+
+            results.push({
+                name: `Pano Resource Release ${version}`,
+                url: `${url}/resources/${resourceId}`
+            });
+        } catch (error) {
+            logger.error('Failed to publish to Pano.');
+            if (error.response) {
+                logger.error(`Status: ${error.response.status}`);
+                logger.error(`Data: ${JSON.stringify(error.response.data)}`);
+                throw new SemanticReleaseError(
+                    `Pano API Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`,
+                    'EPANOAPI',
+                    JSON.stringify(error.response.data)
+                );
+            } else {
+                logger.error(error.message);
+                throw new SemanticReleaseError(error.message, 'ENETWORK');
+            }
         }
     }
+
+    return results.length > 0 ? results[0] : undefined;
 }
 
 module.exports = {
