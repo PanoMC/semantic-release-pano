@@ -12,7 +12,7 @@ npm install semantic-release-pano -D
 
 The plugin can be configured in the **semantic-release** configuration file:
 
-### Single Configuration
+### Single Configuration (File Upload)
 
 ```json
 {
@@ -29,6 +29,32 @@ The plugin can be configured in the **semantic-release** configuration file:
 }
 ```
 
+### GitHub Link Mode (No Upload)
+
+Instead of uploading the file, use the GitHub Release asset URL and SHA-256 hash.
+This is ideal for **free resources** that are already published as GitHub Release assets — avoids duplicate uploads.
+
+```json
+{
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/github", {
+      "assets": [{ "path": "build/libs/*.jar" }]
+    }],
+    ["semantic-release-pano", {
+      "resourceId": "YOUR_RESOURCE_UUID",
+      "file": "build/libs/my-plugin-${version}.jar",
+      "panoVersion": "1.0.0",
+      "useGitHubLink": true,
+      "repositoryUrl": "https://github.com/YourOrg/your-repo.git"
+    }]
+  ]
+}
+```
+
+> **Note:** When using `useGitHubLink`, the `@semantic-release/github` plugin should run **before** `semantic-release-pano` in the plugin list, so that the GitHub Release and its assets are created first.
+
 ### Multiple Configurations (Deploy to multiple sites)
 
 ```json
@@ -36,9 +62,14 @@ The plugin can be configured in the **semantic-release** configuration file:
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
+    ["@semantic-release/github", {
+      "assets": [{ "path": "build/libs/*.jar" }]
+    }],
     ["semantic-release-pano", {
-      "file": "dist/my-plugin.jar",
+      "file": "build/libs/my-plugin-${version}.jar",
       "panoVersion": "1.0.0",
+      "useGitHubLink": true,
+      "repositoryUrl": "https://github.com/YourOrg/your-repo.git",
       "configs": [
         {
           "resourceId": "RESOURCE_UUID_1",
@@ -59,16 +90,31 @@ The plugin can be configured in the **semantic-release** configuration file:
 ## Configuration
 
 | Option | Type | Default | Description |
-|__ | __ | __ | __|
+|---|---|---|---|
 | `configs` | `Array` | `undefined` | List of configurations for multiple deployments. |
 | `resourceId` | `String` | **Required** | The UUID of the Pano resource to update. |
-| `file` | `String` | **Required** | Path to the file to upload (e.g. `.jar` or `.zip`). |
+| `file` | `String` | **Required** | Path to the file (e.g. `.jar` or `.zip`). Supports `${version}` substitution. |
 | `panoVersion` | `String` | **Required** | The target Pano version this release is compatible with. |
 | `panoUrl` | `String` | `https://api.panomc.com` | Base URL of the Pano API. |
 | `tokenVar` | `String` | `PANO_TOKEN` | Name of the environment variable containing the API token. |
+| `useGitHubLink` | `Boolean` | `false` | If `true`, sends the GitHub Release asset URL and SHA-256 hash instead of uploading the file. |
+| `repositoryUrl` | `String` | — | GitHub repository URL (required when `useGitHubLink` is `true`). |
 
 ## Environment Variables
 
 | Variable | Description |
-|__ | __|
+|---|---|
 | `PANO_TOKEN` | **Required** (default). The API token for authentication. Can be customized with `tokenVar`. |
+
+## How It Works
+
+### Upload Mode (default)
+1. Reads the local file
+2. Uploads it to the Pano API as a multipart form
+
+### GitHub Link Mode (`useGitHubLink: true`)
+1. Reads the local file and computes its **SHA-256** hash
+2. Builds the GitHub Release asset download URL from `repositoryUrl` and the release tag
+3. Sends the **URL** and **hash** to the Pano API — no file upload
+
+This is particularly useful for free resources: the file is already on GitHub Releases, so there's no need to upload it again to the Pano server.
