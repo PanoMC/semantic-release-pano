@@ -20,6 +20,30 @@ function getConfigs(pluginConfig) {
     return [pluginConfig];
 }
 
+function currentBranchName(context) {
+    return (
+        (context && context.branch && context.branch.name) ||
+        (context && context.envCi && context.envCi.branch) ||
+        null
+    );
+}
+
+// A config without `branches` runs everywhere (backward compat). With `branches`,
+// it only runs when the release branch matches one of the listed names. If we
+// can't resolve the branch (unusual — semantic-release normally sets it), we
+// fall back to running so a missing context can't silently drop a release.
+function configMatchesBranch(config, branch) {
+    const branches = config && config.branches;
+    if (!Array.isArray(branches) || branches.length === 0) return true;
+    if (!branch) return true;
+    return branches.includes(branch);
+}
+
+function getActiveConfigs(pluginConfig, context) {
+    const branch = currentBranchName(context);
+    return getConfigs(pluginConfig).filter(c => configMatchesBranch(c, branch));
+}
+
 /**
  * Compute SHA-256 hash of a file.
  */
@@ -53,9 +77,14 @@ function buildGitHubAssetUrl(repositoryUrl, tagName, fileName) {
 }
 
 async function verifyConditions(pluginConfig, context) {
-    const { env } = context;
-    const configs = getConfigs(pluginConfig);
+    const { env, logger } = context;
+    const configs = getActiveConfigs(pluginConfig, context);
     const errors = [];
+
+    if (configs.length === 0 && logger) {
+        const branch = currentBranchName(context) || '(unknown)';
+        logger.log(`No semantic-release-pano configs match branch "${branch}"; skipping.`);
+    }
 
     for (const config of configs) {
         const { resourceId, file, panoVersion, tokenVar, useGitHubLink, repositoryUrl } = config;
@@ -89,8 +118,14 @@ async function verifyConditions(pluginConfig, context) {
 
 async function publish(pluginConfig, context) {
     const { env, nextRelease, logger } = context;
-    const configs = getConfigs(pluginConfig);
+    const configs = getActiveConfigs(pluginConfig, context);
     const results = [];
+
+    if (configs.length === 0) {
+        const branch = currentBranchName(context) || '(unknown)';
+        logger.log(`No semantic-release-pano configs match branch "${branch}"; nothing to publish.`);
+        return undefined;
+    }
 
     for (const config of configs) {
         const { resourceId, file, panoUrl, panoVersion, tokenVar, useGitHubLink, repositoryUrl } = config;

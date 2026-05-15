@@ -87,6 +87,43 @@ This is ideal for **free resources** that are already published as GitHub Releas
 }
 ```
 
+### Branch-Scoped Deployments
+
+Restrict a config to specific release branches with the optional `branches`
+field. Configs without `branches` continue to run on every release branch, so
+existing setups keep working unchanged.
+
+```json
+{
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["semantic-release-pano", {
+      "file": "build/libs/my-plugin-${version}.jar",
+      "panoVersion": "1.0.0",
+      "configs": [
+        {
+          "resourceId": "RESOURCE_UUID",
+          "panoUrl": "https://api-dev.panomc.com",
+          "tokenVar": "PANO_TOKEN",
+          "branches": ["dev"]
+        },
+        {
+          "resourceId": "RESOURCE_UUID",
+          "panoUrl": "https://api.panomc.com",
+          "tokenVar": "PANO_PROD_TOKEN",
+          "branches": ["main"]
+        }
+      ]
+    }]
+  ]
+}
+```
+
+With the above, a release from `dev` only hits `api-dev.panomc.com` and a
+release from `main` only hits `api.panomc.com`. `verifyConditions` also skips
+the inactive configs, so a missing `PANO_PROD_TOKEN` won't fail a `dev` build.
+
 ## Configuration
 
 | Option | Type | Default | Description |
@@ -99,6 +136,7 @@ This is ideal for **free resources** that are already published as GitHub Releas
 | `tokenVar` | `String` | `PANO_TOKEN` | Name of the environment variable containing the API token. |
 | `useGitHubLink` | `Boolean` | `false` | If `true`, sends the GitHub Release asset URL and SHA-256 hash instead of uploading the file. |
 | `repositoryUrl` | `String` | — | GitHub repository URL (required when `useGitHubLink` is `true`). |
+| `branches` | `Array<String>` | `undefined` | If set, the config only runs when the release branch name is in this list. Omit to run on every release branch (default). |
 
 ## Environment Variables
 
