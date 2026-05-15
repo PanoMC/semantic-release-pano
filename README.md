@@ -124,6 +124,31 @@ With the above, a release from `dev` only hits `api-dev.panomc.com` and a
 release from `main` only hits `api.panomc.com`. `verifyConditions` also skips
 the inactive configs, so a missing `PANO_PROD_TOKEN` won't fail a `dev` build.
 
+### Changelog Truncation
+
+semantic-release-generated notes can balloon — especially on the first stable
+release of a branch that aggregated many prereleases — and exceed the Pano
+backend's `changelog` validation budget, resulting in a `BAD_REQUEST` reject.
+By default the plugin truncates the notes to **6500 characters** (including a
+trailing `...`) before sending. Override per-config with `maxChangelogLength`:
+
+```json
+{
+  "configs": [
+    {
+      "resourceId": "...",
+      "panoUrl": "https://api.panomc.com",
+      "tokenVar": "PANO_PROD_TOKEN",
+      "branches": ["main"],
+      "maxChangelogLength": 6500
+    }
+  ]
+}
+```
+
+A log line is emitted whenever truncation actually kicks in, so it's visible
+in the release job's output if the cap clips real content.
+
 ## Configuration
 
 | Option | Type | Default | Description |
@@ -137,6 +162,7 @@ the inactive configs, so a missing `PANO_PROD_TOKEN` won't fail a `dev` build.
 | `useGitHubLink` | `Boolean` | `false` | If `true`, sends the GitHub Release asset URL and SHA-256 hash instead of uploading the file. |
 | `repositoryUrl` | `String` | — | GitHub repository URL (required when `useGitHubLink` is `true`). |
 | `branches` | `Array<String>` | `undefined` | If set, the config only runs when the release branch name is in this list. Omit to run on every release branch (default). |
+| `maxChangelogLength` | `Number` | `6500` | Upper bound (chars) for the `changelog` field sent to the Pano API. When `nextRelease.notes` exceeds this, the body is truncated to `maxChangelogLength` characters total — `...` suffix included — to stay under the receiving server's validation limit. |
 
 ## Environment Variables
 

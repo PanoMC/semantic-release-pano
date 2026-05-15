@@ -6,6 +6,8 @@ const FormData = require('form-data');
 const SemanticReleaseError = require('@semantic-release/error');
 
 const DEFAULT_PANO_URL = 'https://api.panomc.com';
+const DEFAULT_MAX_CHANGELOG_LENGTH = 6500;
+const TRUNCATION_SUFFIX = '...';
 
 function getConfigs(pluginConfig) {
     if (Array.isArray(pluginConfig.configs)) {
@@ -42,6 +44,23 @@ function configMatchesBranch(config, branch) {
 function getActiveConfigs(pluginConfig, context) {
     const branch = currentBranchName(context);
     return getConfigs(pluginConfig).filter(c => configMatchesBranch(c, branch));
+}
+
+// Truncate the changelog to fit the receiving Pano resource system's `changelog`
+// validation budget. semantic-release-generated notes can balloon when the first
+// stable release on a branch aggregates a long prerelease history, and the Pano
+// backend rejects oversized payloads with BAD_REQUEST. We cut to `maxLength`
+// characters total — `TRUNCATION_SUFFIX` included — so the body never grows past
+// the configured budget, regardless of where the cut lands inside a word.
+function truncateChangelog(notes, maxLength) {
+    if (!notes) return notes || '';
+    const cap = Number.isFinite(maxLength) && maxLength > 0
+        ? Math.floor(maxLength)
+        : DEFAULT_MAX_CHANGELOG_LENGTH;
+    if (notes.length <= cap) return notes;
+    const suffixLen = TRUNCATION_SUFFIX.length;
+    if (cap <= suffixLen) return TRUNCATION_SUFFIX.slice(0, cap);
+    return notes.slice(0, cap - suffixLen) + TRUNCATION_SUFFIX;
 }
 
 /**
@@ -128,13 +147,17 @@ async function publish(pluginConfig, context) {
     }
 
     for (const config of configs) {
-        const { resourceId, file, panoUrl, panoVersion, tokenVar, useGitHubLink, repositoryUrl } = config;
+        const { resourceId, file, panoUrl, panoVersion, tokenVar, useGitHubLink, repositoryUrl, maxChangelogLength } = config;
         const panoToken = tokenVar ? env[tokenVar] : env.PANO_TOKEN;
         const apiUrl = panoUrl || DEFAULT_PANO_URL;
 
         const version = nextRelease.version;
         const tagName = nextRelease.gitTag || `v${version}`;
-        const notes = nextRelease.notes || '';
+        const rawNotes = nextRelease.notes || '';
+        const notes = truncateChangelog(rawNotes, maxChangelogLength);
+        if (notes.length < rawNotes.length) {
+            logger.log(`Changelog truncated from ${rawNotes.length} to ${notes.length} chars (maxChangelogLength=${maxChangelogLength ?? DEFAULT_MAX_CHANGELOG_LENGTH}).`);
+        }
 
         // Resolve file path with version substitution
         const resolvedFile = file.replace(/\${version}/g, version);
