@@ -34,11 +34,24 @@ function currentBranchName(context) {
 // it only runs when the release branch matches one of the listed names. If we
 // can't resolve the branch (unusual — semantic-release normally sets it), we
 // fall back to running so a missing context can't silently drop a release.
+//
+// IMPORTANT: semantic-release merges the resolved GLOBAL options into every
+// plugin's config, so `config.branches` is usually the release configuration's
+// top-level branch list — whose entries are branch SPECS (strings OR objects
+// like { name: "dev", prerelease: true }), not the plain name list this option
+// documents. A plain `includes(branch)` therefore missed every object entry and
+// silently skipped publishing on prerelease branches (dev releases never reached
+// the Pano store while string-spec branches like "main" kept working). Normalize
+// specs to names before matching.
 function configMatchesBranch(config, branch) {
     const branches = config && config.branches;
     if (!Array.isArray(branches) || branches.length === 0) return true;
     if (!branch) return true;
-    return branches.includes(branch);
+    const names = branches
+        .map((entry) => (typeof entry === 'string' ? entry : entry && entry.name))
+        .filter(Boolean);
+    if (names.length === 0) return true;
+    return names.includes(branch);
 }
 
 function getActiveConfigs(pluginConfig, context) {
