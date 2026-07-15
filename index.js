@@ -12,7 +12,14 @@ const TRUNCATION_SUFFIX = '...';
 function getConfigs(pluginConfig) {
     if (Array.isArray(pluginConfig.configs)) {
         return pluginConfig.configs.map(config => {
-            const { configs, ...baseConfig } = pluginConfig;
+            // Do NOT inherit `branches` from the top level in multi-config mode:
+            // semantic-release merges the resolved GLOBAL options (including the
+            // release configuration's `branches`, e.g. [{name:"dev"},"main"]) into
+            // the plugin config. Inheriting that into every entry would activate
+            // ALL entries on ALL release branches — e.g. a dev prerelease would
+            // also publish to the production store. Branch scoping in multi-config
+            // mode must be declared per entry.
+            const { configs, branches, ...baseConfig } = pluginConfig;
             return {
                 ...baseConfig,
                 ...config
