@@ -3,7 +3,10 @@ const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
 const FormData = require('form-data');
-const SemanticReleaseError = require('@semantic-release/error');
+// @semantic-release/error v4+ is ESM with a default export; older versions
+// exported the class directly. Support both so handleError can actually throw.
+const semanticReleaseErrorModule = require('@semantic-release/error');
+const SemanticReleaseError = semanticReleaseErrorModule.default || semanticReleaseErrorModule;
 
 const DEFAULT_PANO_URL = 'https://api.panomc.com';
 const DEFAULT_MAX_CHANGELOG_LENGTH = 6500;
