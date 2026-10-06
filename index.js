@@ -118,6 +118,21 @@ function buildGitHubAssetUrl(repositoryUrl, tagName, fileName) {
     return `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(fileName)}`;
 }
 
+/**
+ * Pure: the version fields sent to the Pano store. The store tag is always
+ * `v<version>`, even when the git tag is prefixed (monorepo: `stripe-v1.2.0`).
+ * The git tag is only used for the GitHub asset URL.
+ */
+function buildVersionFields({ version, gitTag, notes, panoVersion }) {
+    return {
+        title: `v${version}`,
+        changelog: notes || '',
+        tag: `v${version}`,
+        panoVersion,
+        gitTag: gitTag || `v${version}`
+    };
+}
+
 async function verifyConditions(pluginConfig, context) {
     const { env, logger } = context;
     const configs = getActiveConfigs(pluginConfig, context);
@@ -182,6 +197,9 @@ async function publish(pluginConfig, context) {
             logger.log(`Changelog truncated from ${rawNotes.length} to ${notes.length} chars (maxChangelogLength=${maxChangelogLength ?? DEFAULT_MAX_CHANGELOG_LENGTH}).`);
         }
 
+        const fields = buildVersionFields({ version, gitTag: tagName, notes, panoVersion });
+        const storeTag = fields.tag;
+
         // Resolve file path with version substitution
         const resolvedFile = file.replace(/\${version}/g, version);
         const filePath = path.resolve(resolvedFile);
@@ -206,10 +224,10 @@ async function publish(pluginConfig, context) {
             logger.log(`Asset URL: ${assetUrl}`);
 
             const formData = new FormData();
-            formData.append('title', `v${version}`);
-            formData.append('changelog', notes);
-            formData.append('tag', tagName);
-            formData.append('panoVersion', panoVersion);
+            formData.append('title', fields.title);
+            formData.append('changelog', fields.changelog);
+            formData.append('tag', storeTag);
+            formData.append('panoVersion', fields.panoVersion);
             formData.append('url', assetUrl);
             formData.append('hash', fileHash);
 
@@ -236,10 +254,10 @@ async function publish(pluginConfig, context) {
             logger.log(`Mode: File Upload`);
 
             const formData = new FormData();
-            formData.append('title', `v${version}`);
-            formData.append('changelog', notes);
-            formData.append('tag', tagName);
-            formData.append('panoVersion', panoVersion);
+            formData.append('title', fields.title);
+            formData.append('changelog', fields.changelog);
+            formData.append('tag', storeTag);
+            formData.append('panoVersion', fields.panoVersion);
             formData.append('file', fs.createReadStream(filePath));
 
             try {
@@ -286,5 +304,7 @@ function handleError(error, logger) {
 
 module.exports = {
     verifyConditions,
-    publish
+    publish,
+    buildVersionFields,
+    buildGitHubAssetUrl
 };
