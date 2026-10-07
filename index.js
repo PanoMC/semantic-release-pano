@@ -223,24 +223,26 @@ async function publish(pluginConfig, context) {
             logger.log(`Mode: GitHub Link`);
             logger.log(`Asset URL: ${assetUrl}`);
 
-            const formData = new FormData();
-            formData.append('title', fields.title);
-            formData.append('changelog', fields.changelog);
-            formData.append('tag', storeTag);
-            formData.append('panoVersion', fields.panoVersion);
-            formData.append('url', assetUrl);
-            formData.append('hash', fileHash);
-
             try {
-                const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
-                    headers: {
-                        ...formData.getHeaders(),
-                        'Authorization': `Bearer ${panoToken}`
-                    }
-                });
+                await withTransientRetry(logger, async () => {
+                    const formData = new FormData();
+                    formData.append('title', fields.title);
+                    formData.append('changelog', fields.changelog);
+                    formData.append('tag', storeTag);
+                    formData.append('panoVersion', fields.panoVersion);
+                    formData.append('url', assetUrl);
+                    formData.append('hash', fileHash);
 
-                logger.log(`Successfully published version ${version} to Pano (GitHub link mode)!`);
-                logger.log(`Response: ${JSON.stringify(response.data)}`);
+                    const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
+                        headers: {
+                            ...formData.getHeaders(),
+                            'Authorization': `Bearer ${panoToken}`
+                        }
+                    });
+
+                    logger.log(`Successfully published version ${version} to Pano (GitHub link mode)!`);
+                    logger.log(`Response: ${JSON.stringify(response.data)}`);
+                });
 
                 results.push({
                     name: `Pano Resource Release ${version}`,
@@ -254,32 +256,34 @@ async function publish(pluginConfig, context) {
             logger.log(`Mode: File Upload`);
 
             try {
-                const direct = await tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath, fileName, fileHash, logger });
+                await withTransientRetry(logger, async () => {
+                    const direct = await tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath, fileName, fileHash, logger });
 
-                if (direct.used) {
-                    logger.log(`Successfully published version ${version} to Pano (direct upload)!`);
-                } else {
-                    logger.log(`Upload path: multipart body (${direct.reason}).`);
+                    if (direct.used) {
+                        logger.log(`Successfully published version ${version} to Pano (direct upload)!`);
+                    } else {
+                        logger.log(`Upload path: multipart body (${direct.reason}).`);
 
-                    const formData = new FormData();
-                    formData.append('title', fields.title);
-                    formData.append('changelog', fields.changelog);
-                    formData.append('tag', storeTag);
-                    formData.append('panoVersion', fields.panoVersion);
-                    formData.append('file', fs.createReadStream(filePath));
+                        const formData = new FormData();
+                        formData.append('title', fields.title);
+                        formData.append('changelog', fields.changelog);
+                        formData.append('tag', storeTag);
+                        formData.append('panoVersion', fields.panoVersion);
+                        formData.append('file', fs.createReadStream(filePath));
 
-                    const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
-                        headers: {
-                            ...formData.getHeaders(),
-                            'Authorization': `Bearer ${panoToken}`
-                        },
-                        maxContentLength: Infinity,
-                        maxBodyLength: Infinity
-                    });
+                        const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
+                            headers: {
+                                ...formData.getHeaders(),
+                                'Authorization': `Bearer ${panoToken}`
+                            },
+                            maxContentLength: Infinity,
+                            maxBodyLength: Infinity
+                        });
 
-                    logger.log(`Successfully published version ${version} to Pano (upload mode)!`);
-                    logger.log(`Response: ${JSON.stringify(response.data)}`);
-                }
+                        logger.log(`Successfully published version ${version} to Pano (upload mode)!`);
+                        logger.log(`Response: ${JSON.stringify(response.data)}`);
+                    }
+                });
 
                 results.push({
                     name: `Pano Resource Release ${version}`,
@@ -296,6 +300,34 @@ async function publish(pluginConfig, context) {
 
 const DIRECT_COMPLETE_MAX_WAIT_MS = 120000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The store can be away for a moment (restart, deploy): no answer, a gateway status, or the reverse proxy's own
+// "404 page not found" while no backend is up. Such a publish is repeated; every other answer is final.
+const TRANSIENT_RETRY_WAITS_MS = [15000, 30000, 60000, 60000];
+
+function isTransientFailure(error) {
+    if (error instanceof SemanticReleaseError) return false;
+    if (!error.response) return true;
+    const { status, data } = error.response;
+    return status === 502 || status === 503 || status === 504 || (status === 404 && typeof data === 'string' && data.trim() === '404 page not found');
+}
+
+async function withTransientRetry(logger, attempt, waits = TRANSIENT_RETRY_WAITS_MS) {
+    for (let i = 0; ; i++) {
+        try {
+            return await attempt();
+        } catch (error) {
+            // a repeated publish that answers 409: the lost first attempt did reach the store
+            if (i > 0 && error.response && error.response.status === 409) {
+                logger.log('The store already has this version (the earlier attempt went through).');
+                return undefined;
+            }
+            if (i >= waits.length || !isTransientFailure(error)) throw error;
+            logger.log(`Pano store did not answer (${describeFailure(error)}); retry ${i + 1}/${waits.length} in ${waits[i] / 1000}s.`);
+            await sleep(waits[i]);
+        }
+    }
+}
 
 // Fallback rule: use the multipart body route ONLY when the ticket request says the
 // back-end has no direct upload: 404 (older back-end without the route) or 501 with
@@ -425,5 +457,7 @@ module.exports = {
     verifyConditions,
     publish,
     buildVersionFields,
-    buildGitHubAssetUrl
+    buildGitHubAssetUrl,
+    isTransientFailure,
+    withTransientRetry
 };
