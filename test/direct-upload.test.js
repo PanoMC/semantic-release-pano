@@ -154,3 +154,12 @@ test('link mode does not touch the direct flow', async () => {
         assert.match(post.body.toString(), /releases\/download\/v1\.2\.3\/plugin\.jar/);
     } finally { t.close(); }
 });
+
+test('fallback to body upload when the account has no free ticket (429 UPLOAD_PENDING_LIMIT)', async () => {
+    const t = await setup({ ticket: (q, s, b, send) => send(429, { result: 'error', error: 'RATE_LIMITED', retryAfter: 1750, reason: 'UPLOAD_PENDING_LIMIT' }) });
+    try {
+        await t.run();
+        assert.strictEqual(find(t.calls, 'POST', '/v1/resources/RES/versions').length, 1);
+        assert.strictEqual(t.calls.filter((c) => c.method === 'PUT').length, 0);
+    } finally { t.close(); }
+});

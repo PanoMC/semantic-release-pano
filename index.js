@@ -332,13 +332,17 @@ async function withTransientRetry(logger, attempt, waits = TRANSIENT_RETRY_WAITS
 // Fallback rule: use the multipart body route ONLY when the ticket request says the
 // back-end has no direct upload: 404 (older back-end without the route) or 501 with
 // error DIRECT_UPLOAD_UNAVAILABLE (storage not configured / disabled / probe failed).
+// It is also used when the account has no free ticket left: 429 with reason
+// UPLOAD_PENDING_LIMIT (a release that publishes many resources in one run needs more
+// tickets than the store hands out in a ticket lifetime; the body route has its own limits).
 // Every other ticket answer (401/403 permission, 400 bad tag, 409 version exists,
 // 413 too large, 5xx ...) is a real refusal and fails the release. Once a ticket was
 // issued we never fall back: a failed PUT or complete aborts the ticket and fails.
 function isDirectUploadUnavailable(error) {
     const res = error && error.response;
     if (!res) return false;
-    if (res.status === 404) return true;
+    if (res.status === 404) return !isTransientFailure(error);
+    if (res.status === 429) return Boolean(res.data) && res.data.reason === 'UPLOAD_PENDING_LIMIT';
     return res.status === 501 && res.data && res.data.error === 'DIRECT_UPLOAD_UNAVAILABLE';
 }
 
