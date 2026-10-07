@@ -250,28 +250,36 @@ async function publish(pluginConfig, context) {
                 handleError(error, logger);
             }
         } else {
-            // Upload mode: upload file directly (original behavior)
+            // Upload mode: direct-to-storage flow first, multipart body upload as fallback
             logger.log(`Mode: File Upload`);
 
-            const formData = new FormData();
-            formData.append('title', fields.title);
-            formData.append('changelog', fields.changelog);
-            formData.append('tag', storeTag);
-            formData.append('panoVersion', fields.panoVersion);
-            formData.append('file', fs.createReadStream(filePath));
-
             try {
-                const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
-                    headers: {
-                        ...formData.getHeaders(),
-                        'Authorization': `Bearer ${panoToken}`
-                    },
-                    maxContentLength: Infinity,
-                    maxBodyLength: Infinity
-                });
+                const direct = await tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath, fileName, fileHash, logger });
 
-                logger.log(`Successfully published version ${version} to Pano (upload mode)!`);
-                logger.log(`Response: ${JSON.stringify(response.data)}`);
+                if (direct.used) {
+                    logger.log(`Successfully published version ${version} to Pano (direct upload)!`);
+                } else {
+                    logger.log(`Upload path: multipart body (${direct.reason}).`);
+
+                    const formData = new FormData();
+                    formData.append('title', fields.title);
+                    formData.append('changelog', fields.changelog);
+                    formData.append('tag', storeTag);
+                    formData.append('panoVersion', fields.panoVersion);
+                    formData.append('file', fs.createReadStream(filePath));
+
+                    const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
+                        headers: {
+                            ...formData.getHeaders(),
+                            'Authorization': `Bearer ${panoToken}`
+                        },
+                        maxContentLength: Infinity,
+                        maxBodyLength: Infinity
+                    });
+
+                    logger.log(`Successfully published version ${version} to Pano (upload mode)!`);
+                    logger.log(`Response: ${JSON.stringify(response.data)}`);
+                }
 
                 results.push({
                     name: `Pano Resource Release ${version}`,
@@ -286,8 +294,119 @@ async function publish(pluginConfig, context) {
     return results.length > 0 ? results[0] : undefined;
 }
 
+const DIRECT_COMPLETE_MAX_WAIT_MS = 120000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Fallback rule: use the multipart body route ONLY when the ticket request says the
+// back-end has no direct upload: 404 (older back-end without the route) or 501 with
+// error DIRECT_UPLOAD_UNAVAILABLE (storage not configured / disabled / probe failed).
+// Every other ticket answer (401/403 permission, 400 bad tag, 409 version exists,
+// 413 too large, 5xx ...) is a real refusal and fails the release. Once a ticket was
+// issued we never fall back: a failed PUT or complete aborts the ticket and fails.
+function isDirectUploadUnavailable(error) {
+    const res = error && error.response;
+    if (!res) return false;
+    if (res.status === 404) return true;
+    return res.status === 501 && res.data && res.data.error === 'DIRECT_UPLOAD_UNAVAILABLE';
+}
+
+function describeFailure(error) {
+    if (error && error.response) {
+        const code = error.response.data && error.response.data.error;
+        return `HTTP ${error.response.status}${code ? ` ${code}` : ''}`;
+    }
+    return (error && error.message) || 'unknown error';
+}
+
+async function tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath, fileName, fileHash, logger }) {
+    const base = `${apiUrl}/v1/resources/${resourceId}/versions/uploads`;
+    const auth = { Authorization: `Bearer ${panoToken}` };
+    const size = (await fs.stat(filePath)).size;
+
+    let ticket;
+    try {
+        const response = await axios.post(base, {
+            fileName,
+            size,
+            sha256: fileHash,
+            title: fields.title,
+            changelog: fields.changelog,
+            tag: fields.tag,
+            panoVersion: fields.panoVersion
+        }, { headers: auth });
+        ticket = response.data && response.data.data;
+    } catch (error) {
+        if (isDirectUploadUnavailable(error)) {
+            return { used: false, reason: `direct upload not offered: ${describeFailure(error)}` };
+        }
+        throw error;
+    }
+
+    if (!ticket || !ticket.uploadId || !ticket.upload || !ticket.upload.url) {
+        return { used: false, reason: 'direct upload ticket malformed' };
+    }
+
+    logger.log('Upload path: direct to storage (presigned PUT).');
+    const uploadId = encodeURIComponent(ticket.uploadId);
+    const abort = async () => {
+        try {
+            await axios.delete(`${base}/${uploadId}`, { headers: auth });
+        } catch (e) {
+            logger.error(`Abort of upload ${ticket.uploadId} failed (${describeFailure(e)}); the ticket will expire by itself.`);
+        }
+    };
+
+    try {
+        // Send exactly the headers the ticket lists (they are part of the signature).
+        const putHeaders = { ...(ticket.upload.headers || {}) };
+        if (!Object.keys(putHeaders).some((h) => h.toLowerCase() === 'content-length')) {
+            putHeaders['Content-Length'] = String(size);
+        }
+        try {
+            await axios.put(ticket.upload.url, fs.createReadStream(filePath), {
+                headers: putHeaders,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                maxRedirects: 0
+            });
+        } catch (error) {
+            throw new Error(`Storage upload failed (${describeFailure(error)})`);
+        }
+
+        const deadline = Date.now() + DIRECT_COMPLETE_MAX_WAIT_MS;
+        for (;;) {
+            let response;
+            try {
+                response = await axios.post(`${base}/${uploadId}/complete`, undefined, { headers: auth });
+            } catch (error) {
+                const status = error.response && error.response.status;
+                // 409 UPLOAD_NOT_FOUND (object not visible yet) and 429 UPLOAD_BUSY are not terminal.
+                if ((status === 409 || status === 429) && Date.now() < deadline) {
+                    const wait = Number(error.response.data && error.response.data.retryAfter);
+                    await sleep(Number.isFinite(wait) ? Math.min(wait, 10) * 1000 : 1000);
+                    continue;
+                }
+                throw new Error(`Completing the upload failed (${describeFailure(error)})`);
+            }
+            const data = (response.data && response.data.data) || response.data || {};
+            if (response.status === 202 || data.status === 'COMPLETING') {
+                if (Date.now() >= deadline) throw new Error('Completing the upload timed out');
+                const wait = Number(data.retryAfter);
+                await sleep(Number.isFinite(wait) ? Math.min(wait, 10) * 1000 : 1000);
+                continue;
+            }
+            return { used: true, versionId: data.id };
+        }
+    } catch (error) {
+        await abort();
+        logger.error(error.message);
+        throw new SemanticReleaseError(`Direct upload failed after a ticket was issued: ${error.message}`, 'EPANOUPLOAD');
+    }
+}
+
 function handleError(error, logger) {
     logger.error('Failed to publish to Pano.');
+    if (error instanceof SemanticReleaseError) throw error;
     if (error.response) {
         logger.error(`Status: ${error.response.status}`);
         logger.error(`Data: ${JSON.stringify(error.response.data)}`);

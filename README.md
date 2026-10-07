@@ -29,6 +29,16 @@ The plugin can be configured in the **semantic-release** configuration file:
 }
 ```
 
+**How the file is sent.** The plugin first asks the store for a direct upload ticket
+(`POST /v1/resources/<id>/versions/uploads`), PUTs the file to the presigned storage URL with exactly
+the headers the ticket lists, then calls `.../complete`. The log says which path was used (the
+presigned URL is never logged). If the store does not offer direct uploads (404 from an older
+back-end, or 501 `DIRECT_UPLOAD_UNAVAILABLE`), the file is sent in a multipart body to
+`POST /v1/resources/<id>/versions` as before. Real refusals (permission, file too large, version
+exists, bad tag) fail the release and are never retried through the body route. If the PUT or
+complete step fails after a ticket was issued, the ticket is aborted (best effort) and the release
+fails. GitHub Link mode is unchanged.
+
 ### GitHub Link Mode (No Upload)
 
 Instead of uploading the file, use the GitHub Release asset URL and SHA-256 hash.
