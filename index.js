@@ -312,6 +312,18 @@ function isTransientFailure(error) {
     return status === 502 || status === 503 || status === 504 || (status === 404 && typeof data === 'string' && data.trim() === '404 page not found');
 }
 
+// 429 with a short retryAfter (seconds) is the store pacing requests: wait that long and repeat. A long one (the upload
+// ticket limit asks for up to half an hour) is not waited out here.
+const MAX_RATE_LIMIT_WAIT_SECONDS = 120;
+
+function rateLimitWaitMs(error) {
+    const res = error && error.response;
+    if (!res || res.status !== 429) return null;
+    const seconds = Number(res.data && res.data.retryAfter);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > MAX_RATE_LIMIT_WAIT_SECONDS) return null;
+    return (seconds + 1) * 1000;
+}
+
 async function withTransientRetry(logger, attempt, waits = TRANSIENT_RETRY_WAITS_MS) {
     for (let i = 0; ; i++) {
         try {
@@ -322,9 +334,12 @@ async function withTransientRetry(logger, attempt, waits = TRANSIENT_RETRY_WAITS
                 logger.log('The store already has this version (the earlier attempt went through).');
                 return undefined;
             }
-            if (i >= waits.length || !isTransientFailure(error)) throw error;
-            logger.log(`Pano store did not answer (${describeFailure(error)}); retry ${i + 1}/${waits.length} in ${waits[i] / 1000}s.`);
-            await sleep(waits[i]);
+            if (i >= waits.length) throw error;
+            const paced = rateLimitWaitMs(error);
+            if (paced === null && !isTransientFailure(error)) throw error;
+            const wait = paced === null ? waits[i] : paced;
+            logger.log(`Pano store ${paced === null ? 'did not answer' : 'asked to slow down'} (${describeFailure(error)}); retry ${i + 1}/${waits.length} in ${Math.ceil(wait / 1000)}s.`);
+            await sleep(wait);
         }
     }
 }
@@ -463,5 +478,6 @@ module.exports = {
     buildVersionFields,
     buildGitHubAssetUrl,
     isTransientFailure,
+    rateLimitWaitMs,
     withTransientRetry
 };

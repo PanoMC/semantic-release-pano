@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { isTransientFailure, withTransientRetry } = require('../index.js');
+const { isTransientFailure, rateLimitWaitMs, withTransientRetry } = require('../index.js');
 
 const logger = { log() {}, error() {} };
 const httpError = (status, data) => Object.assign(new Error(`HTTP ${status}`), { response: { status, data } });
@@ -44,4 +44,23 @@ test('gives up after the last wait', async () => {
     let calls = 0;
     await assert.rejects(withTransientRetry(logger, async () => { calls++; throw httpError(503, ''); }, [1, 1]));
     assert.equal(calls, 3);
+});
+
+test('a short 429 retryAfter is waited out, a long one is not', () => {
+    assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED', retryAfter: 1, reason: 'TOO_FAST' })), 2000);
+    assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED', retryAfter: 1750, reason: 'UPLOAD_PENDING_LIMIT' })), null);
+    assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED' })), null);
+    assert.equal(rateLimitWaitMs(httpError(503, { retryAfter: 1 })), null);
+});
+
+test('a paced publish is repeated after the wait the store asked for', async () => {
+    let calls = 0;
+    const started = Date.now();
+    const result = await withTransientRetry(logger, async () => {
+        if (++calls === 1) throw httpError(429, { error: 'RATE_LIMITED', retryAfter: 0, reason: 'TOO_FAST' });
+        return 'done';
+    }, [60000]);
+    assert.equal(result, 'done');
+    assert.equal(calls, 2);
+    assert.ok(Date.now() - started < 5000);
 });
