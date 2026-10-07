@@ -30,7 +30,7 @@ test('a final failure is not repeated', async () => {
     assert.equal(calls, 1);
 });
 
-test('409 on a repeated publish means the lost attempt went through', async () => {
+test('409 after a lost answer means the lost attempt went through', async () => {
     let calls = 0;
     await withTransientRetry(logger, async () => { throw ++calls === 1 ? new Error('socket hang up') : httpError(409, { error: 'VERSION_EXISTS' }); }, [1, 1]);
     assert.equal(calls, 2);
@@ -47,7 +47,7 @@ test('gives up after the last wait', async () => {
 });
 
 test('a short 429 retryAfter is waited out, a long one is not', () => {
-    assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED', retryAfter: 1, reason: 'TOO_FAST' })), 2000);
+    assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED', retryAfter: 1, reason: 'TOO_FAST' })), 1500);
     assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED', retryAfter: 1750, reason: 'UPLOAD_PENDING_LIMIT' })), null);
     assert.equal(rateLimitWaitMs(httpError(429, { error: 'RATE_LIMITED' })), null);
     assert.equal(rateLimitWaitMs(httpError(503, { retryAfter: 1 })), null);
@@ -63,4 +63,16 @@ test('a paced publish is repeated after the wait the store asked for', async () 
     assert.equal(result, 'done');
     assert.equal(calls, 2);
     assert.ok(Date.now() - started < 5000);
+});
+
+test('pacing does not use up the retries kept for a lost answer', async () => {
+    let calls = 0;
+    const result = await withTransientRetry(logger, async () => {
+        calls++;
+        if (calls <= 5) throw httpError(429, { error: 'RATE_LIMITED', retryAfter: 0, reason: 'TOO_FAST' });
+        if (calls === 6) throw httpError(503, '');
+        return 'done';
+    }, [1]);
+    assert.equal(result, 'done');
+    assert.equal(calls, 7);
 });

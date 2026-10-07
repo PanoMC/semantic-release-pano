@@ -315,31 +315,39 @@ function isTransientFailure(error) {
 // 429 with a short retryAfter (seconds) is the store pacing requests: wait that long and repeat. A long one (the upload
 // ticket limit asks for up to half an hour) is not waited out here.
 const MAX_RATE_LIMIT_WAIT_SECONDS = 120;
+const MAX_PACED_RETRIES = 10;
 
 function rateLimitWaitMs(error) {
     const res = error && error.response;
     if (!res || res.status !== 429) return null;
     const seconds = Number(res.data && res.data.retryAfter);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > MAX_RATE_LIMIT_WAIT_SECONDS) return null;
-    return (seconds + 1) * 1000;
+    return seconds * 1000 + 500;
 }
 
 async function withTransientRetry(logger, attempt, waits = TRANSIENT_RETRY_WAITS_MS) {
-    for (let i = 0; ; i++) {
+    let lost = 0;
+    let paced = 0;
+    for (;;) {
         try {
             return await attempt();
         } catch (error) {
-            // a repeated publish that answers 409: the lost first attempt did reach the store
-            if (i > 0 && error.response && error.response.status === 409) {
+            // a publish repeated after a lost answer that now says 409: the lost attempt did reach the store
+            if (lost > 0 && error.response && error.response.status === 409) {
                 logger.log('The store already has this version (the earlier attempt went through).');
                 return undefined;
             }
-            if (i >= waits.length) throw error;
-            const paced = rateLimitWaitMs(error);
-            if (paced === null && !isTransientFailure(error)) throw error;
-            const wait = paced === null ? waits[i] : paced;
-            logger.log(`Pano store ${paced === null ? 'did not answer' : 'asked to slow down'} (${describeFailure(error)}); retry ${i + 1}/${waits.length} in ${Math.ceil(wait / 1000)}s.`);
-            await sleep(wait);
+            const pacedWait = rateLimitWaitMs(error);
+            if (pacedWait !== null) {
+                if (paced >= MAX_PACED_RETRIES) throw error;
+                paced++;
+                logger.log(`Pano store asked to slow down (${describeFailure(error)}); retry ${paced}/${MAX_PACED_RETRIES} in ${Math.ceil(pacedWait / 1000)}s.`);
+                await sleep(pacedWait);
+                continue;
+            }
+            if (lost >= waits.length || !isTransientFailure(error)) throw error;
+            logger.log(`Pano store did not answer (${describeFailure(error)}); retry ${lost + 1}/${waits.length} in ${waits[lost] / 1000}s.`);
+            await sleep(waits[lost++]);
         }
     }
 }
@@ -369,10 +377,17 @@ function describeFailure(error) {
     return (error && error.message) || 'unknown error';
 }
 
+// Set when the store says the account has no free upload ticket: the next publishes of this run go straight to the body route.
+let noTicketUntil = 0;
+
 async function tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath, fileName, fileHash, logger }) {
     const base = `${apiUrl}/v1/resources/${resourceId}/versions/uploads`;
     const auth = { Authorization: `Bearer ${panoToken}` };
     const size = (await fs.stat(filePath)).size;
+
+    if (Date.now() < noTicketUntil) {
+        return { used: false, reason: 'direct upload not offered: no free upload ticket (asked earlier in this run)' };
+    }
 
     let ticket;
     try {
@@ -388,6 +403,10 @@ async function tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath
         ticket = response.data && response.data.data;
     } catch (error) {
         if (isDirectUploadUnavailable(error)) {
+            if (error.response.status === 429) {
+                const seconds = Number(error.response.data.retryAfter);
+                noTicketUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000;
+            }
             return { used: false, reason: `direct upload not offered: ${describeFailure(error)}` };
         }
         throw error;
