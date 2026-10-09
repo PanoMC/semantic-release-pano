@@ -75,7 +75,7 @@ test('direct success: ticket body, signed headers, exact bytes, complete', async
         const r = await t.run();
         assert.ok(r);
         const ticket = JSON.parse(find(t.calls, 'POST', '/v1/resources/RES/versions/uploads')[0].body);
-        assert.deepStrictEqual(ticket, { fileName: 'plugin.jar', size: BYTES.length, sha256: SHA, title: 'v1.2.3', changelog: 'n', tag: 'v1.2.3', panoVersion: '1.0.0', apiLevel: 1 });
+        assert.deepStrictEqual(ticket, { fileName: 'plugin.jar', size: BYTES.length, sha256: SHA, title: 'v1.2.3', changelog: 'n', tag: 'v1.2.3', panoVersion: '1.0.0' });
         const put = t.calls.find((c) => c.method === 'PUT');
         assert.strictEqual(put.headers['content-type'], 'application/java-archive');
         assert.strictEqual(put.headers['x-amz-acl'], 'private');
@@ -166,7 +166,7 @@ test('api level from a theme zip manifest.json goes into the ticket', async () =
     const zip = themeZipWithLevel(3);
     const t = await setup({}, zip, 'theme.zip');
     try {
-        await t.run();
+        await t.run({ sendApiLevel: true });
         const ticket = JSON.parse(find(t.calls, 'POST', '/v1/resources/RES/versions/uploads')[0].body);
         assert.strictEqual(ticket.apiLevel, 3);
         assert.strictEqual(ticket.fileName, 'theme.zip');
@@ -176,7 +176,7 @@ test('api level from a theme zip manifest.json goes into the ticket', async () =
 test('api level goes into the multipart fallback form', async () => {
     const t = await setup({ ticket: (q, s, b, send) => send(404, { error: 'NOT_EXISTS' }) });
     try {
-        await t.run();
+        await t.run({ sendApiLevel: true });
         assert.strictEqual(formField(find(t.calls, 'POST', '/v1/resources/RES/versions')[0].body, 'apiLevel'), '1');
     } finally { t.close(); }
 });
@@ -184,8 +184,16 @@ test('api level goes into the multipart fallback form', async () => {
 test('api level goes into the GitHub link form', async () => {
     const t = await setup({}, jarWithLevel(2));
     try {
-        await t.run({ useGitHubLink: true, repositoryUrl: 'https://github.com/PanoMC/x.git' });
+        await t.run({ useGitHubLink: true, sendApiLevel: true, repositoryUrl: 'https://github.com/PanoMC/x.git' });
         assert.strictEqual(formField(find(t.calls, 'POST', '/v1/resources/RES/versions')[0].body, 'apiLevel'), '2');
+    } finally { t.close(); }
+});
+
+test('without sendApiLevel the level is still required but not sent', async () => {
+    const t = await setup({}, themeZipWithLevel(3), 'theme.zip');
+    try {
+        await t.run();
+        assert.strictEqual('apiLevel' in JSON.parse(find(t.calls, 'POST', '/v1/resources/RES/versions/uploads')[0].body), false);
     } finally { t.close(); }
 });
 
@@ -214,7 +222,7 @@ test('verifyConditions fails early on a built artifact without api-level, passes
 test('apiLevel option overrides the artifact; requireApiLevel false lets a bare artifact through', async () => {
     const a = await setup({}, jarWithLevel(null));
     try {
-        await a.run({ apiLevel: 4 });
+        await a.run({ apiLevel: 4, sendApiLevel: true });
         assert.strictEqual(JSON.parse(find(a.calls, 'POST', '/v1/resources/RES/versions/uploads')[0].body).apiLevel, 4);
     } finally { a.close(); }
     const b = await setup({}, jarWithLevel(null));

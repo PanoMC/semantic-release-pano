@@ -174,6 +174,7 @@ in the release job's output if the cap clips real content.
 | `branches` | `Array<String>` | `undefined` | If set, the config only runs when the release branch name is in this list. Omit to run on every release branch (default). |
 | `maxChangelogLength` | `Number` | `6500` | Upper bound (chars) for the `changelog` field sent to the Pano API. When `nextRelease.notes` exceeds this, the body is truncated to `maxChangelogLength` characters total — `...` suffix included — to stay under the receiving server's validation limit. |
 | `apiLevel` | `Number` | read from the artifact | The Pano API level the release needs (a whole number, 1 or more), sent as the `apiLevel` field. Set it only for an artifact that carries no level of its own (for example the Minecraft plugin); when set, the artifact is not read. |
+| `sendApiLevel` | `Boolean` | `false` | If `true`, the level is sent to the store as the `apiLevel` field. Off by default: a store that does not know the field yet refuses the publish (400). The level is read and required either way. |
 | `requireApiLevel` | `Boolean` | `true` | If `false`, an artifact without an API level is published anyway (no `apiLevel` is sent, so the store records level 0 and never offers the version as compatible). |
 
 ## API level

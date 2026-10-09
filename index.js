@@ -245,7 +245,15 @@ async function publish(pluginConfig, context) {
         }
 
         const apiLevel = await resolveApiLevel(config, filePath);
-        const fields = buildVersionFields({ version, gitTag: tagName, notes, panoVersion, apiLevel });
+        // The store accepts the level only once it knows the field; until then it refuses the unknown property. The level
+        // is still read and required, so every published artifact carries one: `sendApiLevel: true` also sends it.
+        const fields = buildVersionFields({
+            version,
+            gitTag: tagName,
+            notes,
+            panoVersion,
+            apiLevel: config.sendApiLevel === true ? apiLevel : undefined
+        });
         const storeTag = fields.tag;
 
         const fileHash = await computeFileHash(filePath);
@@ -256,7 +264,7 @@ async function publish(pluginConfig, context) {
         logger.log(`Resource ID: ${resourceId}`);
         logger.log(`File: ${filePath}`);
         logger.log(`SHA-256: ${fileHash}`);
-        if (apiLevel) logger.log(`API level: ${apiLevel}`);
+        if (apiLevel) logger.log(`API level: ${apiLevel}${config.sendApiLevel === true ? '' : ' (not sent: sendApiLevel is off)'}`);
 
         if (useGitHubLink) {
             // Link mode: send GitHub Release asset URL + hash instead of uploading the file
