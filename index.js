@@ -11,6 +11,7 @@ const SemanticReleaseError = semanticReleaseErrorModule.default || semanticRelea
 const DEFAULT_PANO_URL = 'https://api.panomc.com';
 const DEFAULT_MAX_CHANGELOG_LENGTH = 6500;
 const TRUNCATION_SUFFIX = '...';
+const { MISSING_MESSAGE, readApiLevel } = require('./lib/api-level');
 
 function getConfigs(pluginConfig) {
     if (Array.isArray(pluginConfig.configs)) {
@@ -123,14 +124,39 @@ function buildGitHubAssetUrl(repositoryUrl, tagName, fileName) {
  * `v<version>`, even when the git tag is prefixed (monorepo: `stripe-v1.2.0`).
  * The git tag is only used for the GitHub asset URL.
  */
-function buildVersionFields({ version, gitTag, notes, panoVersion }) {
+function buildVersionFields({ version, gitTag, notes, panoVersion, apiLevel }) {
     return {
         title: `v${version}`,
         changelog: notes || '',
         tag: `v${version}`,
         panoVersion,
-        gitTag: gitTag || `v${version}`
+        gitTag: gitTag || `v${version}`,
+        ...(apiLevel ? { apiLevel } : {})
     };
+}
+
+/**
+ * The level sent with a publish: the `apiLevel` option when set (artifacts that are not a Pano plugin or theme, e.g. the
+ * Minecraft plugin), else read from the artifact. `requireApiLevel: false` lets an artifact without one through.
+ * Throws EAPILEVEL when it is required and absent.
+ */
+async function resolveApiLevel(config, filePath) {
+    if (config.apiLevel !== undefined && config.apiLevel !== null) {
+        const level = Number(config.apiLevel);
+        if (!Number.isInteger(level) || level < 1) {
+            throw new SemanticReleaseError('apiLevel configuration must be a whole number of 1 or more.', 'EINVALIDCONFIG');
+        }
+        return level;
+    }
+    if (config.requireApiLevel === false) return undefined;
+    let level = null;
+    try {
+        level = await readApiLevel(filePath);
+    } catch (e) {
+        throw new SemanticReleaseError(`${MISSING_MESSAGE} (${e.message})`, 'EAPILEVEL');
+    }
+    if (level === null) throw new SemanticReleaseError(MISSING_MESSAGE, 'EAPILEVEL');
+    return level;
 }
 
 async function verifyConditions(pluginConfig, context) {
@@ -166,6 +192,19 @@ async function verifyConditions(pluginConfig, context) {
         if (useGitHubLink && !repositoryUrl) {
             errors.push('repositoryUrl is required when useGitHubLink is true.');
         }
+
+        // The artifact is usually built later (prepare), and its name may carry the next version. When it can
+        // already be read, fail early; otherwise publish checks it before anything is sent.
+        if (file && !file.includes('${version}')) {
+            const filePath = path.resolve(file);
+            if (await fs.pathExists(filePath)) {
+                try {
+                    await resolveApiLevel(config, filePath);
+                } catch (e) {
+                    errors.push(e.message);
+                }
+            }
+        }
     }
 
     if (errors.length > 0) {
@@ -197,9 +236,6 @@ async function publish(pluginConfig, context) {
             logger.log(`Changelog truncated from ${rawNotes.length} to ${notes.length} chars (maxChangelogLength=${maxChangelogLength ?? DEFAULT_MAX_CHANGELOG_LENGTH}).`);
         }
 
-        const fields = buildVersionFields({ version, gitTag: tagName, notes, panoVersion });
-        const storeTag = fields.tag;
-
         // Resolve file path with version substitution
         const resolvedFile = file.replace(/\${version}/g, version);
         const filePath = path.resolve(resolvedFile);
@@ -207,6 +243,10 @@ async function publish(pluginConfig, context) {
         if (!(await fs.pathExists(filePath))) {
             throw new SemanticReleaseError(`File ${filePath} not found.`, 'ENOFILE');
         }
+
+        const apiLevel = await resolveApiLevel(config, filePath);
+        const fields = buildVersionFields({ version, gitTag: tagName, notes, panoVersion, apiLevel });
+        const storeTag = fields.tag;
 
         const fileHash = await computeFileHash(filePath);
         const fileName = path.basename(filePath);
@@ -216,6 +256,7 @@ async function publish(pluginConfig, context) {
         logger.log(`Resource ID: ${resourceId}`);
         logger.log(`File: ${filePath}`);
         logger.log(`SHA-256: ${fileHash}`);
+        if (apiLevel) logger.log(`API level: ${apiLevel}`);
 
         if (useGitHubLink) {
             // Link mode: send GitHub Release asset URL + hash instead of uploading the file
@@ -230,6 +271,7 @@ async function publish(pluginConfig, context) {
                     formData.append('changelog', fields.changelog);
                     formData.append('tag', storeTag);
                     formData.append('panoVersion', fields.panoVersion);
+                    if (fields.apiLevel) formData.append('apiLevel', String(fields.apiLevel));
                     formData.append('url', assetUrl);
                     formData.append('hash', fileHash);
 
@@ -269,6 +311,7 @@ async function publish(pluginConfig, context) {
                         formData.append('changelog', fields.changelog);
                         formData.append('tag', storeTag);
                         formData.append('panoVersion', fields.panoVersion);
+                        if (fields.apiLevel) formData.append('apiLevel', String(fields.apiLevel));
                         formData.append('file', fs.createReadStream(filePath));
 
                         const response = await axios.post(`${apiUrl}/v1/resources/${resourceId}/versions`, formData, {
@@ -398,7 +441,8 @@ async function tryDirectUpload({ apiUrl, resourceId, panoToken, fields, filePath
             title: fields.title,
             changelog: fields.changelog,
             tag: fields.tag,
-            panoVersion: fields.panoVersion
+            panoVersion: fields.panoVersion,
+            ...(fields.apiLevel ? { apiLevel: fields.apiLevel } : {})
         }, { headers: auth });
         ticket = response.data && response.data.data;
     } catch (error) {
@@ -495,6 +539,7 @@ module.exports = {
     verifyConditions,
     publish,
     buildVersionFields,
+    resolveApiLevel,
     buildGitHubAssetUrl,
     isTransientFailure,
     rateLimitWaitMs,

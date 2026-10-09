@@ -173,6 +173,27 @@ in the release job's output if the cap clips real content.
 | `repositoryUrl` | `String` | — | GitHub repository URL (required when `useGitHubLink` is `true`). |
 | `branches` | `Array<String>` | `undefined` | If set, the config only runs when the release branch name is in this list. Omit to run on every release branch (default). |
 | `maxChangelogLength` | `Number` | `6500` | Upper bound (chars) for the `changelog` field sent to the Pano API. When `nextRelease.notes` exceeds this, the body is truncated to `maxChangelogLength` characters total — `...` suffix included — to stay under the receiving server's validation limit. |
+| `apiLevel` | `Number` | read from the artifact | The Pano API level the release needs (a whole number, 1 or more), sent as the `apiLevel` field. Set it only for an artifact that carries no level of its own (for example the Minecraft plugin); when set, the artifact is not read. |
+| `requireApiLevel` | `Boolean` | `true` | If `false`, an artifact without an API level is published anyway (no `apiLevel` is sent, so the store records level 0 and never offers the version as compatible). |
+
+## API level
+
+Every Pano plugin and theme declares the API level it needs. The plugin reads it from the artifact itself, with the same rule the store uses for files uploaded on the website:
+
+1. a jar: the `api-level` attribute in the main section of `META-INF/MANIFEST.MF`;
+2. otherwise a zip: `apiLevel` in the root `manifest.json` (themes, custom apps).
+
+The level is logged (`API level: N`) and sent as `apiLevel` with the upload or with the GitHub link, so the store can answer "the newest version your Pano can run".
+
+### `EAPILEVEL`
+
+`verifyConditions`/`publish` fails with `EAPILEVEL` ("artifact has no api-level: run "bunx @panomc/sdk pano-api migrate-v1" and rebuild") when the artifact carries no level and `requireApiLevel` is not `false`. What to do:
+
+- A plugin or theme built for Pano: run `bunx @panomc/sdk pano-api migrate-v1` once in the repository, rebuild, and release again; the build then writes the level into the jar manifest or the theme's `manifest.json`.
+- An artifact that is not a Pano plugin or theme and has no level to carry: set `apiLevel` in the configuration, or `requireApiLevel: false` to publish it as level 0.
+- A bad `apiLevel` option (not a whole number of 1 or more) fails with `EINVALIDCONFIG`.
+
+A version added by hand through the website form gets its level the same way: read from the uploaded file, else from the optional `apiLevel` form field, else 0.
 
 ## Environment Variables
 
